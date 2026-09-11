@@ -10,46 +10,47 @@ Faithful re-implementation of the Google Sheets SLP workbook:
 
 Split follows the lecture slides: 80 training samples (first 40 of each class),
 20 validation samples (last 10 of each class).
+
+Per the validation worksheet: "in validation, bias and teta are obtained from
+training for each epoch" - so each epoch trains on the 80 training rows, then
+evaluates the 20 validation rows with the weights that epoch ended on. The
+validation pass never updates the weights.
+
+Both splits are read straight from the CSV exports of the workbook, so the
+numbers here track whatever the spreadsheet actually contains.
 """
 
 import numpy as np
 import pandas as pd
 
+TRAIN_CSV = "SLP - Muhammad Javier.xlsx - SLP.csv"
+VAL_CSV = "validation-SLP.csv"
+
+X_COLS = [2, 3, 4, 5]        # X1, X2, X3, X4
+Y_COL = 6                    # TARGET
+
 
 # --------------------------------------------------------------------------
 # 1. Data
 # --------------------------------------------------------------------------
-# The training rows live in the CSV export of the sheet. The sheet repeats the
-# SAME 80 samples every epoch, so we only read them once (the epoch-1 block).
-def load_training_samples(csv_path: str, n_samples: int = 80):
+def _read_block(csv_path, first_row, n_samples):
+    """Pull one contiguous block of samples out of a sheet export."""
     df = pd.read_csv(csv_path, header=None)
-
-    data_start_row = 4           # first data row (0-indexed) in the CSV
-    x_cols = [2, 3, 4, 5]        # X1, X2, X3, X4
-    y_col = 6                    # TARGET
-
-    block = df.loc[data_start_row: data_start_row + n_samples - 1]
-    X = block[x_cols].astype(float).to_numpy()
-    y = block[y_col].astype(float).to_numpy()
+    block = df.loc[first_row: first_row + n_samples - 1]
+    X = block[X_COLS].astype(float).to_numpy()
+    y = block[Y_COL].astype(float).to_numpy()
     return X, y
 
 
-# The 20 held-out samples (Iris rows 41-50 and 91-100). X4 is held at 0.2 to
-# stay consistent with the training block in the sheet.
-VALIDATION = [
-    (5.0, 3.5, 1.3, 0.2, 0), (4.5, 2.3, 1.3, 0.2, 0), (4.4, 3.2, 1.3, 0.2, 0),
-    (5.0, 3.5, 1.6, 0.2, 0), (5.1, 3.8, 1.9, 0.2, 0), (4.8, 3.0, 1.4, 0.2, 0),
-    (5.1, 3.8, 1.6, 0.2, 0), (4.6, 3.2, 1.4, 0.2, 0), (5.3, 3.7, 1.5, 0.2, 0),
-    (5.0, 3.3, 1.4, 0.2, 0), (5.5, 2.6, 4.4, 0.2, 1), (6.1, 3.0, 4.6, 0.2, 1),
-    (5.8, 2.6, 4.0, 0.2, 1), (5.0, 2.3, 3.3, 0.2, 1), (5.6, 2.7, 4.2, 0.2, 1),
-    (5.7, 3.0, 4.2, 0.2, 1), (5.7, 2.9, 4.2, 0.2, 1), (6.2, 2.9, 4.3, 0.2, 1),
-    (5.1, 2.5, 3.0, 0.2, 1), (5.7, 2.8, 4.1, 0.2, 1),
-]
+def load_training_samples(csv_path=TRAIN_CSV, n_samples=80):
+    """The training sheet repeats the SAME 80 samples every epoch, so we only
+    need to read them once (out of the epoch-1 block, which starts on row 5)."""
+    return _read_block(csv_path, 4, n_samples)
 
 
-def load_validation_samples():
-    arr = np.array(VALIDATION, dtype=float)
-    return arr[:, :4], arr[:, 4]
+def load_validation_samples(csv_path=VAL_CSV, n_samples=20):
+    """Likewise for the validation sheet, whose epoch-1 block starts on row 7."""
+    return _read_block(csv_path, 6, n_samples)
 
 
 # --------------------------------------------------------------------------
@@ -66,10 +67,6 @@ class SingleLayerPerceptron:
     def _sigmoid(z):
         return 1.0 / (1.0 + np.exp(-z))
 
-    def _forward(self, x):
-        z = self.bias + np.dot(self.weights, x)
-        return z, self._sigmoid(z)
-
     def train_one_epoch(self, X, y):
         """One pass over the data, updating weights sample-by-sample
         (online gradient descent), exactly like the spreadsheet. Returns the
@@ -79,7 +76,8 @@ class SingleLayerPerceptron:
         sq_errors = np.empty(len(y), dtype=float)
 
         for i, (x, target) in enumerate(zip(X, y)):
-            z, output = self._forward(x)
+            z = self.bias + np.dot(self.weights, x)
+            output = self._sigmoid(z)
             predictions[i] = 1 if output >= 0.5 else 0
             sq_errors[i] = (output - target) ** 2
 
@@ -93,7 +91,8 @@ class SingleLayerPerceptron:
         return predictions, sq_errors
 
     def evaluate_split(self, X, y):
-        """Forward pass only - used for the validation split."""
+        """Forward pass only, using the weights training just left behind.
+        Used for the validation split - no weight updates here."""
         outputs = self._sigmoid(self.bias + X @ self.weights)
         predictions = (outputs >= 0.5).astype(int)
         return predictions, (outputs - y) ** 2
@@ -122,10 +121,9 @@ def metrics(y_true, y_pred, sq_errors):
 # --------------------------------------------------------------------------
 # 4. Run it
 # --------------------------------------------------------------------------
-def main(csv_path="SLP - Muhammad Javier.xlsx - SLP.csv",
-         n_epochs=5, learning_rate=0.1):
-    X_train, y_train = load_training_samples(csv_path)
-    X_val, y_val = load_validation_samples()
+def main(train_csv=TRAIN_CSV, val_csv=VAL_CSV, n_epochs=5, learning_rate=0.1):
+    X_train, y_train = load_training_samples(train_csv)
+    X_val, y_val = load_validation_samples(val_csv)
 
     model = SingleLayerPerceptron(n_features=X_train.shape[1],
                                   learning_rate=learning_rate)
@@ -162,8 +160,9 @@ def main(csv_path="SLP - Muhammad Javier.xlsx - SLP.csv",
     print("\nFinal bias   :", round(model.bias, 6))
     print("Final weights:", np.round(model.weights, 6))
     print("\nGoogle Sheets reference")
-    print("  training loss : [0.449439, 0.051185, 0.033209, 0.023076, 0.017130]")
-    print("  training F1   : [0.666667, 0.936709, 0.950000, 0.975000, 0.975000]")
+    print("  training loss : [0.450203, 0.037529, 0.024418, 0.017389, 0.012764]")
+    print("  training F1   : [0.672414, 0.950000, 0.975000, 0.975000, 0.987342]")
+    print("  val. loss     : [0.329163, 0.247463, 0.176014, 0.119424, 0.081583]")
 
     return model, df
 
